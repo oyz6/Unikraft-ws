@@ -100,25 +100,34 @@ jobs:
           echo "Metro: $METRO"
           echo "内存: ${MEMORY}M"
 
-      - name: 登录 Unikraft Cloud
+      - name: 登录 Unikraft Cloud 并获取组织名
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
         run: |
           echo "$UKC_TOKEN" > /tmp/ukc-token
-          unikraft login --token /tmp/ukc-token
+          chmod 600 /tmp/ukc-token
+          LOGIN_OUTPUT=$(unikraft login --token /tmp/ukc-token 2>&1)
+          echo "$LOGIN_OUTPUT"
+          # 提取组织名，去除 ANSI 颜色码
+          ORG=$(echo "$LOGIN_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP 'organization=\K[^ ]+')
+          if [ -z "$ORG" ]; then
+            echo "无法自动提取组织名，使用默认值 oyz"
+            ORG="oyz"
+          fi
+          echo "ORG=$ORG" >> "$GITHUB_ENV"
+          echo "当前组织: $ORG"
 
       - name: 验证登录状态
         run: unikraft metro list
 
       - name: 构建镜像
         run: |
-          IMAGE="my-org/${{ env.APP_NAME }}:latest"
+          IMAGE="unikraft.io/${{ env.ORG }}/${{ env.APP_NAME }}:latest"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           unikraft build . --output "$IMAGE"
 
       - name: 部署实例
         env:
-          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
           UUID_VAL: ${{ github.event.inputs.UUID }}
           NEZHA_SERVER_VAL: ${{ github.event.inputs.NEZHA_SERVER }}
           NEZHA_KEY_VAL: ${{ github.event.inputs.NEZHA_KEY }}
@@ -145,7 +154,7 @@ jobs:
           echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
 
           # 先删除同名实例（若存在）
-          unikraft instances delete "${{ env.APP_NAME }}" 2>/dev/null || true
+          unikraft instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
 
           ENV_ARGS=""
           ENV_ARGS="$ENV_ARGS --env UUID=$UUID_INPUT"
@@ -173,16 +182,16 @@ jobs:
       - name: 获取实例信息
         run: |
           echo "=== 实例列表 ==="
-          unikraft instances list
+          unikraft instance list
 
           echo ""
           echo "=== 实例详情 ==="
-          unikraft instances get ${{ env.APP_NAME }} || true
+          unikraft instance get ${{ env.APP_NAME }} || true
 
-          FQDN=$(unikraft instances get ${{ env.APP_NAME }} -o json 2>/dev/null \
+          FQDN=$(unikraft instance get ${{ env.APP_NAME }} -o json 2>/dev/null \
             | grep -oE '"fqdn"[^,]*' | head -1 | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
           if [ -z "$FQDN" ]; then
-            FQDN=$(unikraft instances list 2>/dev/null | grep "${{ env.APP_NAME }}" \
+            FQDN=$(unikraft instance list 2>/dev/null | grep "${{ env.APP_NAME }}" \
               | grep -oE '[a-z0-9-]+\.'${{ env.METRO }}'\.unikraft\.app' | head -1)
           fi
           echo "FQDN=$FQDN" >> "$GITHUB_ENV"
@@ -193,6 +202,7 @@ jobs:
           echo "🚀 部署完成！详细信息如下："
           echo "Metro: ${{ env.METRO }}"
           echo "应用名称(App Name): ${{ env.APP_NAME }}"
+          echo "组织: ${{ env.ORG }}"
           echo "内存: ${{ env.MEMORY }}M"
           echo "UUID: ${{ env.UUID }}"
           echo "WSPATH: ${{ env.WSPATH }}"
@@ -206,6 +216,10 @@ jobs:
           else
             echo "⚠️ 未获取到 FQDN，请在 unikraft 控制台查看实例详情"
           fi
+
+      - name: 清理临时 Token 文件
+        if: always()
+        run: rm -f /tmp/ukc-token
 
       - name: 清理旧的工作流运行记录
         if: always()
