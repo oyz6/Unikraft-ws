@@ -1,4 +1,9 @@
-FROM python:3.12-slim AS builder
+FROM python:3.12-alpine AS builder
+
+RUN apk add --no-cache \
+    gcc musl-dev python3-dev libffi-dev openssl-dev \
+    make cmake zlib-dev
+
 WORKDIR /app
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir --target=/app/deps -r requirements.txt
