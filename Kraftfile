@@ -8,8 +8,5 @@ cmd: ["python3", "/app/app.py"]
 
 env:
   PORT: "3000"
-  # WSPATH: "c202b33e"
-  # SUB_PATH: "sub"
-  # NAME: "Unikraft"
-  # UUID、SERVER、CLIENT_SECRET 等敏感信息不写在这里，
-  # 部署时通过 --env 传入。
+  SUB_PATH: "sub"
+  NAME: "Unikraft"
