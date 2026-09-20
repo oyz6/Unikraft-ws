@@ -8,4 +8,3 @@ env:
   SUB_PATH: "sub"
   NAME: "ukc-node"
   ENABLE_NEZHA: "false"
-  TEMPLATE_MODE: "false"
