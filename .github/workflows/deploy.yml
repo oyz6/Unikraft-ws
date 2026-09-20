@@ -62,10 +62,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 安装 kraft CLI
+      - name: 安装 Unikraft CLI
         run: |
-          curl -sSfL https://get.kraftkit.sh | sh
+          curl --proto '=https' --tlsv1.2 -fsSL https://unikraft.com/cli/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.unikraft/bin" >> $GITHUB_PATH
 
       - name: 安装 Docker（BuildKit）
         uses: docker/setup-buildx-action@v3
@@ -99,27 +100,25 @@ jobs:
           echo "Metro: $METRO"
           echo "内存: ${MEMORY}M"
 
-      - name: 验证 kraft CLI 和认证
+      - name: 登录 Unikraft Cloud
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-          UKC_METRO: ${{ env.METRO }}
         run: |
-          kraft version
-          kraft cloud metro list
+          echo "$UKC_TOKEN" > /tmp/ukc-token
+          unikraft login --token /tmp/ukc-token
+
+      - name: 验证登录状态
+        run: unikraft metro list
 
       - name: 构建镜像
-        env:
-          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-          UKC_METRO: ${{ env.METRO }}
         run: |
           IMAGE="my-org/${{ env.APP_NAME }}:latest"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          kraft pkg --plat kraftcloud --arch x86_64 --name "$IMAGE" --push .
+          unikraft build . --output "$IMAGE"
 
       - name: 部署实例
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-          UKC_METRO: ${{ env.METRO }}
           UUID_VAL: ${{ github.event.inputs.UUID }}
           NEZHA_SERVER_VAL: ${{ github.event.inputs.NEZHA_SERVER }}
           NEZHA_KEY_VAL: ${{ github.event.inputs.NEZHA_KEY }}
@@ -146,7 +145,7 @@ jobs:
           echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
 
           # 先删除同名实例（若存在）
-          kraft cloud instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
+          unikraft instances delete "${{ env.APP_NAME }}" 2>/dev/null || true
 
           ENV_ARGS=""
           ENV_ARGS="$ENV_ARGS --env UUID=$UUID_INPUT"
@@ -162,30 +161,28 @@ jobs:
             ENV_ARGS="$ENV_ARGS --env CLIENT_SECRET=$NEZHA_KEY_INPUT"
           fi
 
-          kraft cloud deploy \
-            --name "${{ env.APP_NAME }}" \
-            --memory "${{ env.MEMORY }}M" \
+          unikraft run \
+            --metro=${{ env.METRO }} \
+            --name=${{ env.APP_NAME }} \
+            --memory=${{ env.MEMORY }}M \
             -p 443:${{ env.INTERNAL_PORT }}/tls+http \
             --scale-to-zero policy=on,cooldown-time=1000 \
             $ENV_ARGS \
-            --image "${{ env.IMAGE }}"
+            --image ${{ env.IMAGE }}
 
       - name: 获取实例信息
-        env:
-          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-          UKC_METRO: ${{ env.METRO }}
         run: |
           echo "=== 实例列表 ==="
-          kraft cloud instance list
+          unikraft instances list
 
           echo ""
           echo "=== 实例详情 ==="
-          kraft cloud instance get ${{ env.APP_NAME }} || true
+          unikraft instances get ${{ env.APP_NAME }} || true
 
-          FQDN=$(kraft cloud instance get ${{ env.APP_NAME }} -o json 2>/dev/null \
+          FQDN=$(unikraft instances get ${{ env.APP_NAME }} -o json 2>/dev/null \
             | grep -oE '"fqdn"[^,]*' | head -1 | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
           if [ -z "$FQDN" ]; then
-            FQDN=$(kraft cloud instance list 2>/dev/null | grep "${{ env.APP_NAME }}" \
+            FQDN=$(unikraft instances list 2>/dev/null | grep "${{ env.APP_NAME }}" \
               | grep -oE '[a-z0-9-]+\.'${{ env.METRO }}'\.unikraft\.app' | head -1)
           fi
           echo "FQDN=$FQDN" >> "$GITHUB_ENV"
@@ -207,7 +204,7 @@ jobs:
             echo ""
             echo "VLESS 节点: vless://${{ env.UUID }}@$FQDN:443?encryption=none&security=tls&sni=$FQDN&fp=chrome&type=ws&host=$FQDN&path=%2F${{ env.WSPATH }}"
           else
-            echo "⚠️ 未获取到 FQDN，请在 kraft 控制台查看实例详情"
+            echo "⚠️ 未获取到 FQDN，请在 unikraft 控制台查看实例详情"
           fi
 
       - name: 清理旧的工作流运行记录
