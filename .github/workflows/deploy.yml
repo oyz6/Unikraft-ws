@@ -1,26 +1,58 @@
-name: 部署到 Unikraft Cloud
+name: 自动部署代理到 Unikraft Cloud
 
 on:
   workflow_dispatch:
     inputs:
-      metro:
-        description: 'Metro（区域）'
+      type:
+        description: '选择部署的节点类型'
+        required: true
+        default: 'ws直连节点'
+        type: choice
+        options:
+          - ws直连节点
+      METRO:
+        description: 'Metro 区域（如 fra、was、sin 等，留空使用 fra）'
         required: false
         default: 'fra'
-      memory:
-        description: '内存 (MB)'
+      app_name:
+        description: '应用名称（可选，留空则自动生成）'
+        required: false
+        default: ''
+      UUID:
+        description: 'UUID(可选，留空将使用默认值，节点和哪吒v1共用)'
+        required: false
+        default: ''
+      NEZHA_SERVER:
+        description: 'NEZHA_SERVER(v1:nezha.xxx.com:8008)'
+        required: false
+        default: ''
+      NEZHA_KEY:
+        description: 'NEZHA-KEY(须和 NEZHA_SERVER 一起填写)'
+        required: false
+        default: ''
+      SUB_PATH:
+        description: 'SUB_PATH(订阅 token，可选，留空使用 sub)'
+        required: false
+        default: ''
+      MEMORY:
+        description: '内存 MB（默认 512）'
         required: false
         default: '512'
-      app_name:
-        description: '实例名称'
-        required: false
-        default: 'ukc-node'
+
+env:
+  DEFAULT_METRO: fra
+  DEFAULT_MEMORY: 512
+  INTERNAL_PORT: 3000
 
 jobs:
-  deploy:
+  deploy-app:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: 安装 Unikraft CLI
@@ -28,42 +60,102 @@ jobs:
           curl -fsSL https://unikraft.com/install.sh | sh
           echo "$HOME/.unikraft/bin" >> $GITHUB_PATH
 
-      - name: 安装 Docker
+      - name: 安装 Docker（BuildKit）
         uses: docker/setup-buildx-action@v3
+
+      - name: 生成 app 名称和变量
+        run: |
+          RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 8)
+          APP_NAME="$RANDOM_STR"
+          if [ -n "${{ github.event.inputs.app_name }}" ]; then
+            APP_NAME="${{ github.event.inputs.app_name }}"
+          fi
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+
+          METRO="${{ github.event.inputs.METRO }}"
+          if [ -z "$METRO" ]; then
+            METRO="${{ env.DEFAULT_METRO }}"
+          fi
+          echo "METRO=$METRO" >> "$GITHUB_ENV"
+
+          MEMORY="${{ github.event.inputs.MEMORY }}"
+          if [ -z "$MEMORY" ]; then
+            MEMORY="${{ env.DEFAULT_MEMORY }}"
+          fi
+          echo "MEMORY=$MEMORY" >> "$GITHUB_ENV"
+
+          echo "应用名称: $APP_NAME"
+          echo "Metro: $METRO"
+          echo "内存: ${MEMORY}M"
 
       - name: 登录 Unikraft Cloud
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-        run: unikraft login
+        run: |
+          unikraft login
+          unikraft metro list || true
 
       - name: 构建镜像
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
         run: |
-          unikraft build . \
-            --output my-org/${{ github.event.inputs.app_name }}:latest
+          IMAGE="my-org/${{ env.APP_NAME }}:latest"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          unikraft build . --output "$IMAGE"
 
       - name: 部署实例
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
-          UUID: ${{ secrets.UUID }}
-          SERVER: ${{ secrets.SERVER }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          UUID_VAL: ${{ github.event.inputs.UUID }}
+          NEZHA_SERVER_VAL: ${{ github.event.inputs.NEZHA_SERVER }}
+          NEZHA_KEY_VAL: ${{ github.event.inputs.NEZHA_KEY }}
+          SUB_PATH_VAL: ${{ github.event.inputs.SUB_PATH }}
         run: |
+          set -euo pipefail
+
+          UUID_INPUT="${UUID_VAL:-${{ secrets.UUID }}}"
+          NEZHA_SERVER_INPUT="${NEZHA_SERVER_VAL:-${{ secrets.NEZHA_SERVER }}}"
+          NEZHA_KEY_INPUT="${NEZHA_KEY_VAL:-${{ secrets.NEZHA_KEY }}}"
+          SUB_PATH_INPUT="${SUB_PATH_VAL:-${{ secrets.SUB_PATH }}}"
+
+          if [ -z "$UUID_INPUT" ]; then
+            UUID_INPUT="c202b33e-03d9-406c-9bba-1ca228036028"
+          fi
+          if [ -z "$SUB_PATH_INPUT" ]; then
+            SUB_PATH_INPUT="sub"
+          fi
+
+          WSPATH_VAL="${UUID_INPUT:0:8}"
+
+          echo "UUID=$UUID_INPUT" >> "$GITHUB_ENV"
+          echo "WSPATH=$WSPATH_VAL" >> "$GITHUB_ENV"
+          echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
+
+          # 先删除同名实例（若存在）
+          unikraft instances delete "${{ env.APP_NAME }}" 2>/dev/null || true
+
+          ENV_ARGS=""
+          ENV_ARGS="$ENV_ARGS --env UUID=$UUID_INPUT"
+          ENV_ARGS="$ENV_ARGS --env PORT=${{ env.INTERNAL_PORT }}"
+          ENV_ARGS="$ENV_ARGS --env WSPATH=$WSPATH_VAL"
+          ENV_ARGS="$ENV_ARGS --env SUB_PATH=$SUB_PATH_INPUT"
+          ENV_ARGS="$ENV_ARGS --env NAME=ukc"
+
+          if [ -n "$NEZHA_SERVER_INPUT" ]; then
+            ENV_ARGS="$ENV_ARGS --env SERVER=$NEZHA_SERVER_INPUT"
+          fi
+          if [ -n "$NEZHA_KEY_INPUT" ]; then
+            ENV_ARGS="$ENV_ARGS --env CLIENT_SECRET=$NEZHA_KEY_INPUT"
+          fi
+
           unikraft run \
-            --metro=${{ github.event.inputs.metro }} \
-            --name=${{ github.event.inputs.app_name }} \
-            --memory=${{ github.event.inputs.memory }}M \
-            -p 443:3000/tls+http \
+            --metro=${{ env.METRO }} \
+            --name=${{ env.APP_NAME }} \
+            --memory=${{ env.MEMORY }}M \
+            -p 443:${{ env.INTERNAL_PORT }}/tls+http \
             --scale-to-zero policy=on,cooldown-time=1000 \
-            --env UUID="$UUID" \
-            --env SERVER="$SERVER" \
-            --env CLIENT_SECRET="$CLIENT_SECRET" \
-            --env PORT=3000 \
-            --env WSPATH="${UUID:0:8}" \
-            --env SUB_PATH=sub \
-            --env NAME=ukc-node \
-            --image my-org/${{ github.event.inputs.app_name }}:latest
+            $ENV_ARGS \
+            --image ${{ env.IMAGE }}
 
       - name: 获取实例信息
         env:
@@ -71,6 +163,50 @@ jobs:
         run: |
           echo "=== 实例列表 ==="
           unikraft instances list
+
           echo ""
           echo "=== 实例详情 ==="
-          unikraft instances get ${{ github.event.inputs.app_name }}
+          unikraft instances get ${{ env.APP_NAME }} || true
+
+          FQDN=$(unikraft instances get ${{ env.APP_NAME }} -o json 2>/dev/null \
+            | grep -oE '"fqdn"[^,]*' | head -1 | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
+          if [ -z "$FQDN" ]; then
+            FQDN=$(unikraft instances list 2>/dev/null | grep "${{ env.APP_NAME }}" \
+              | grep -oE '[a-z0-9-]+\.'${{ env.METRO }}'\.unikraft\.app' | head -1)
+          fi
+          echo "FQDN=$FQDN" >> "$GITHUB_ENV"
+          echo "访问域名: $FQDN"
+
+      - name: 详细部署信息
+        run: |
+          echo "🚀 部署完成！详细信息如下："
+          echo "Metro: ${{ env.METRO }}"
+          echo "应用名称(App Name): ${{ env.APP_NAME }}"
+          echo "内存: ${{ env.MEMORY }}M"
+          echo "UUID: ${{ env.UUID }}"
+          echo "WSPATH: ${{ env.WSPATH }}"
+          echo "订阅路径: ${{ env.SUB_PATH }}"
+          echo ""
+          if [ -n "${FQDN:-}" ]; then
+            echo "App url: https://$FQDN"
+            echo "节点订阅链接: https://$FQDN/${{ env.SUB_PATH }}"
+            echo ""
+            echo "VLESS 节点: vless://${{ env.UUID }}@$FQDN:443?encryption=none&security=tls&sni=$FQDN&fp=chrome&type=ws&host=$FQDN&path=%2F${{ env.WSPATH }}"
+          else
+            echo "⚠️ 未获取到 FQDN，请在 unikraft 控制台查看实例详情"
+          fi
+
+      - name: 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "删除运行记录: $run_id"
+              gh run delete $run_id || true
+            fi
+          done
