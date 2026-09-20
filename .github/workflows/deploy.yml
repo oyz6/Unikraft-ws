@@ -63,9 +63,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 安装 Unikraft CLI
-        run: |
-          curl -fsSL https://unikraft.com/install.sh | sh
-          echo "$HOME/.unikraft/bin" >> $GITHUB_PATH
+        uses: unikraft/setup-action@v1
 
       - name: 安装 Docker（BuildKit）
         uses: docker/setup-buildx-action@v3
