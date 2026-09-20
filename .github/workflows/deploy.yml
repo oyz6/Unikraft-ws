@@ -3,13 +3,6 @@ name: 自动部署代理到 Unikraft Cloud
 on:
   workflow_dispatch:
     inputs:
-      type:
-        description: '选择部署的节点类型'
-        required: true
-        default: 'ws直连节点'
-        type: choice
-        options:
-          - ws直连节点
       METRO:
         description: 'Metro 区域'
         required: true
@@ -29,24 +22,8 @@ on:
         description: 'UUID（留空用默认值）'
         required: false
         default: ''
-      NEZHA_SERVER:
-        description: 'NEZHA_SERVER（例如 nezha.xxx.com:443）'
-        required: false
-        default: ''
-      NEZHA_KEY:
-        description: 'NEZHA_KEY（须和 NEZHA_SERVER 一起填）'
-        required: false
-        default: ''
-      ENABLE_NEZHA:
-        description: '是否启用哪吒 Agent'
-        required: true
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
       SUB_PATH:
-        description: 'SUB_PATH（订阅 token，留空使用 sub）'
+        description: 'SUB_PATH（留空使用 sub）'
         required: false
         default: ''
       MEMORY:
@@ -114,11 +91,8 @@ jobs:
           chmod 600 /tmp/ukc-token
           LOGIN_OUTPUT=$(unikraft login --token /tmp/ukc-token 2>&1)
           echo "$LOGIN_OUTPUT"
-          ORG=$(echo "$LOGIN_OUTPUT" \
-            | sed 's/\x1b\[[0-9;]*m//g' \
-            | grep -oP 'organization=\K[^ ]+' \
-            | head -n 1 \
-            | tr -d '[:space:]')
+          ORG=$(echo "$LOGIN_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' \
+            | grep -oP 'organization=\K[^ ]+' | head -n 1 | tr -d '[:space:]')
           [ -z "$ORG" ] && ORG="oyz"
           echo "当前组织: [$ORG]"
           echo "ORG=$ORG" >> "$GITHUB_ENV"
@@ -132,62 +106,81 @@ jobs:
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           unikraft build . --output "$IMAGE"
 
-      - name: 部署实例
+      - name: 通过 On-Demand Template 部署
         env:
           UUID_VAL: ${{ github.event.inputs.UUID }}
-          NEZHA_SERVER_VAL: ${{ github.event.inputs.NEZHA_SERVER }}
-          NEZHA_KEY_VAL: ${{ github.event.inputs.NEZHA_KEY }}
           SUB_PATH_VAL: ${{ github.event.inputs.SUB_PATH }}
         run: |
           set -euo pipefail
 
           UUID_INPUT="${UUID_VAL:-${{ secrets.UUID }}}"
-          NZ_SERVER_INPUT="${NEZHA_SERVER_VAL:-${{ secrets.NEZHA_SERVER }}}"
-          NZ_KEY_INPUT="${NEZHA_KEY_VAL:-${{ secrets.NEZHA_KEY }}}"
           SUB_PATH_INPUT="${SUB_PATH_VAL:-${{ secrets.SUB_PATH }}}"
-          ENABLE_NEZHA_VAL="${{ github.event.inputs.ENABLE_NEZHA }}"
-
           [ -z "$UUID_INPUT" ] && UUID_INPUT="c202b33e-03d9-406c-9bba-1ca228036028"
           [ -z "$SUB_PATH_INPUT" ] && SUB_PATH_INPUT="sub"
-          [ -z "$ENABLE_NEZHA_VAL" ] && ENABLE_NEZHA_VAL="false"
-
           WSPATH_VAL="${UUID_INPUT:0:8}"
 
           echo "UUID=$UUID_INPUT" >> "$GITHUB_ENV"
           echo "WSPATH=$WSPATH_VAL" >> "$GITHUB_ENV"
           echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
 
+          # 先删除同名实例（若存在）
           unikraft instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
 
-          ENV_ARGS=""
-          ENV_ARGS="$ENV_ARGS --env UUID=$UUID_INPUT"
-          ENV_ARGS="$ENV_ARGS --env PORT=${{ env.INTERNAL_PORT }}"
-          ENV_ARGS="$ENV_ARGS --env WSPATH=$WSPATH_VAL"
-          ENV_ARGS="$ENV_ARGS --env SUB_PATH=$SUB_PATH_INPUT"
-          ENV_ARGS="$ENV_ARGS --env NAME=ukc"
-          ENV_ARGS="$ENV_ARGS --env ENABLE_NEZHA=$ENABLE_NEZHA_VAL"
+          # 构造 On-Demand Template 请求
+          TEMPLATE_NAME="${{ env.APP_NAME }}-tpl"
 
-          if [ "$ENABLE_NEZHA_VAL" = "true" ]; then
-            if [ -n "$NZ_SERVER_INPUT" ]; then
-              ENV_ARGS="$ENV_ARGS --env NZ_SERVER=$NZ_SERVER_INPUT"
-            fi
-            if [ -n "$NZ_KEY_INPUT" ]; then
-              ENV_ARGS="$ENV_ARGS --env NZ_CLIENT_SECRET=$NZ_KEY_INPUT"
-            fi
-            ENV_ARGS="$ENV_ARGS --env NZ_UUID=$UUID_INPUT"
-          fi
+          cat > /tmp/deploy.json <<JSONEOF
+          {
+            "name": "${{ env.APP_NAME }}",
+            "template": {
+              "name": "${TEMPLATE_NAME}",
+              "prepare": true,
+              "create_args": {
+                "image": "${{ env.IMAGE }}",
+                "memory_mb": ${{ env.MEMORY }},
+                "vcpus": 1,
+                "env": {
+                  "TEMPLATE_MODE": "true",
+                  "PORT": "${{ env.INTERNAL_PORT }}",
+                  "UUID": "${UUID_INPUT}",
+                  "WSPATH": "${WSPATH_VAL}",
+                  "SUB_PATH": "${SUB_PATH_INPUT}"
+                }
+              }
+            },
+            "runtime": {
+              "env": {
+                "TEMPLATE_MODE": "false",
+                "PORT": "${{ env.INTERNAL_PORT }}",
+                "UUID": "${UUID_INPUT}",
+                "WSPATH": "${WSPATH_VAL}",
+                "SUB_PATH": "${SUB_PATH_INPUT}",
+                "NAME": "ukc",
+                "ENABLE_NEZHA": "false"
+              }
+            },
+            "service_group": {
+              "services": [
+                {
+                  "port": 443,
+                  "destination_port": ${{ env.INTERNAL_PORT }},
+                  "handlers": ["tls", "http"]
+                }
+              ]
+            },
+            "autostart": true
+          }
+          JSONEOF
 
-          unikraft run \
-            --metro=${{ env.METRO }} \
-            --name=${{ env.APP_NAME }} \
-            --memory=${{ env.MEMORY }}M \
-            -p 443:${{ env.INTERNAL_PORT }}/tls+http \
-            --scale-to-zero policy=on,cooldown-time=1000 \
-            $ENV_ARGS \
-            --image ${{ env.IMAGE }}
+          echo "=== Deploy JSON ==="
+          cat /tmp/deploy.json
+
+          # 调用 API
+          unikraft api /v1/instances --metro=${{ env.METRO }} -d @/tmp/deploy.json
 
       - name: 获取实例信息
         run: |
+          sleep 10
           echo "=== 实例列表 ==="
           unikraft instance list
           echo ""
@@ -210,11 +203,11 @@ jobs:
           echo "Metro: ${{ env.METRO }}"
           echo "应用名称: ${{ env.APP_NAME }}"
           echo "组织: ${{ env.ORG }}"
+          echo "模板名称: ${{ env.APP_NAME }}-tpl"
           echo "内存: ${{ env.MEMORY }}M"
           echo "UUID: ${{ env.UUID }}"
           echo "WSPATH: ${{ env.WSPATH }}"
           echo "订阅路径: ${{ env.SUB_PATH }}"
-          echo "启用哪吒: ${{ github.event.inputs.ENABLE_NEZHA }}"
           echo ""
           if [ -n "${FQDN:-}" ]; then
             echo "主页: https://$FQDN/"
@@ -225,9 +218,9 @@ jobs:
             echo "⚠️ 未获取到 FQDN"
           fi
 
-      - name: 清理临时 Token 文件
+      - name: 清理临时文件
         if: always()
-        run: rm -f /tmp/ukc-token
+        run: rm -f /tmp/ukc-token /tmp/deploy.json
 
       - name: 清理旧的工作流运行记录
         if: always()
