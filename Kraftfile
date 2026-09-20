@@ -1,4 +1,4 @@
-spec: v0.6
+spec: v0.7
 
 runtime: python:3.12
 
@@ -9,4 +9,5 @@ cmd: ["python3", "/app/app.py"]
 env:
   PORT: "3000"
   SUB_PATH: "sub"
-  NAME: "Unikraft"
+  NAME: "ukc-node"
+  ENABLE_NEZHA: "false"
