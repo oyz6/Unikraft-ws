@@ -11,9 +11,16 @@ on:
         options:
           - ws直连节点
       METRO:
-        description: 'Metro 区域（如 fra、was、sin 等，留空使用 fra）'
-        required: false
-        default: 'fra'
+        description: 'Metro 区域'
+        required: true
+        default: '德国 法兰克福 (fra)'
+        type: choice
+        options:
+          - 德国 法兰克福 (fra)
+          - 美国 达拉斯 (dal)
+          - 美国 圣何塞 (sfo)
+          - 新加坡 (sin)
+          - 美国 华盛顿 (was)
       app_name:
         description: '应用名称（可选，留空则自动生成）'
         required: false
