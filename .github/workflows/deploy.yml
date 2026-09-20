@@ -79,10 +79,14 @@ jobs:
           fi
           echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
 
-          METRO="${{ github.event.inputs.METRO }}"
-          if [ -z "$METRO" ]; then
-            METRO="${{ env.DEFAULT_METRO }}"
-          fi
+          case "${{ github.event.inputs.METRO }}" in
+            "德国 法兰克福 (fra)") METRO="fra" ;;
+            "美国 达拉斯 (dal)")   METRO="dal" ;;
+            "美国 圣何塞 (sfo)")   METRO="sfo" ;;
+            "新加坡 (sin)")        METRO="sin" ;;
+            "美国 华盛顿 (was)")   METRO="was" ;;
+            *)                     METRO="${{ env.DEFAULT_METRO }}" ;;
+          esac
           echo "METRO=$METRO" >> "$GITHUB_ENV"
 
           MEMORY="${{ github.event.inputs.MEMORY }}"
