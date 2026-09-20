@@ -417,11 +417,18 @@ def _get_arch() -> str:
 
 
 def _download_agent_so() -> bool:
-    """下载 main-{py_ver}-{arch}.so。"""
+    """
+    下载 musl 版 main.so。
+    Unikraft Cloud 使用 musl libc，必须使用 -musl.so 后缀的版本。
+    参考 oyz8/agent-v1-so Release 命名规则：
+        main-{python}-{arch}.so       # glibc（VPS / Debian / Ubuntu）
+        main-{python}-{arch}-musl.so  # musl（Alpine / Unikraft Cloud）
+    """
     try:
         py_ver = _get_python_version()
         arch = _get_arch()
-        asset_name = f"main-{py_ver}-{arch}.so"
+        # ★ 关键：使用 musl 版本
+        asset_name = f"main-{py_ver}-{arch}-musl.so"
 
         api_url = "https://api.github.com/repos/oyz8/agent-v1-so/releases/latest"
         with urllib.request.urlopen(api_url, timeout=10) as resp:
@@ -431,9 +438,16 @@ def _download_agent_so() -> bool:
                 logger.error("No tag_name in GitHub API response")
                 return False
 
-        download_url = (
-            f"https://github.com/oyz8/agent-v1-so/releases/download/{tag}/{asset_name}"
-        )
+        # 优先从 assets 里匹配准确的 name，避免命名不一致
+        assets = data.get("assets", [])
+        matched = next((a for a in assets if a.get("name") == asset_name), None)
+        if matched:
+            download_url = matched.get("browser_download_url")
+        else:
+            download_url = (
+                f"https://github.com/oyz8/agent-v1-so/releases/download/{tag}/{asset_name}"
+            )
+
         local_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "main.so")
 
