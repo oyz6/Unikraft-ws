@@ -1,0 +1,76 @@
+name: 部署到 Unikraft Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      metro:
+        description: 'Metro（区域）'
+        required: false
+        default: 'fra'
+      memory:
+        description: '内存 (MB)'
+        required: false
+        default: '512'
+      app_name:
+        description: '实例名称'
+        required: false
+        default: 'ukc-node'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Unikraft CLI
+        run: |
+          curl -fsSL https://unikraft.com/install.sh | sh
+          echo "$HOME/.unikraft/bin" >> $GITHUB_PATH
+
+      - name: 安装 Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Unikraft Cloud
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
+        run: unikraft login
+
+      - name: 构建镜像
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
+        run: |
+          unikraft build . \
+            --output my-org/${{ github.event.inputs.app_name }}:latest
+
+      - name: 部署实例
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
+          UUID: ${{ secrets.UUID }}
+          SERVER: ${{ secrets.SERVER }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+        run: |
+          unikraft run \
+            --metro=${{ github.event.inputs.metro }} \
+            --name=${{ github.event.inputs.app_name }} \
+            --memory=${{ github.event.inputs.memory }}M \
+            -p 443:3000/tls+http \
+            --scale-to-zero policy=on,cooldown-time=1000 \
+            --env UUID="$UUID" \
+            --env SERVER="$SERVER" \
+            --env CLIENT_SECRET="$CLIENT_SECRET" \
+            --env PORT=3000 \
+            --env WSPATH="${UUID:0:8}" \
+            --env SUB_PATH=sub \
+            --env NAME=ukc-node \
+            --image my-org/${{ github.event.inputs.app_name }}:latest
+
+      - name: 获取实例信息
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
+        run: |
+          echo "=== 实例列表 ==="
+          unikraft instances list
+          echo ""
+          echo "=== 实例详情 ==="
+          unikraft instances get ${{ github.event.inputs.app_name }}
