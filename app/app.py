@@ -458,7 +458,6 @@ async def http_handler(request):
     elif request.path == f'/{SUB_PATH}':
         await get_isp()
 
-        # 动态从请求 Host 获取域名
         domain = request.host.split(':')[0]
         current_port = 443
         tls_param = 'tls'
@@ -596,10 +595,15 @@ def start_nezha_agent():
 
 # ================== 主函数 ==================
 async def main():
+    # 哪吒 Agent：用 try/except 包裹，避免线程失败导致主应用崩溃
     if SERVER and CLIENT_SECRET:
         logger.info('Starting Nezha Agent via start_worker...')
-        nezha_thread = threading.Thread(target=start_nezha_agent, daemon=True)
-        nezha_thread.start()
+        try:
+            nezha_thread = threading.Thread(target=start_nezha_agent, daemon=True)
+            nezha_thread.start()
+        except Exception as e:
+            logger.error(f'Failed to start Nezha agent thread: {e}')
+            logger.error('Continuing without Nezha agent.')
     else:
         logger.info('Nezha variables empty, skipping agent.')
 
