@@ -39,7 +39,7 @@ on:
           - 'false'
           - 'true'
       NEZHA_SERVER:
-        description: 'NEZHA_SERVER（如 nezha.xxx.com:443，仅 ENABLE_NEZHA=true 时使用）'
+        description: 'NEZHA_SERVER（仅 ENABLE_NEZHA=true 时使用）'
         required: false
         default: ''
       NEZHA_KEY:
@@ -72,8 +72,10 @@ jobs:
       - name: 安装 Docker（BuildKit）
         uses: docker/setup-buildx-action@v3
 
-      - name: 安装 jq
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: 安装 jq 和 curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq curl
 
       - name: 生成 app 名称和变量
         run: |
@@ -112,11 +114,13 @@ jobs:
           echo "$LOGIN_OUTPUT"
           ORG=$(echo "$LOGIN_OUTPUT" \
             | sed 's/\x1b\[[0-9;]*m//g' \
-            | grep -oP 'organization=\K[^ ]+' \
-            | head -n 1 | tr -d '[:space:]')
+            | grep -oP 'organization=\K[^ ]+' | head -n 1 | tr -d '[:space:]')
           [ -z "$ORG" ] && ORG="oyz"
           echo "当前组织: [$ORG]"
           echo "ORG=$ORG" >> "$GITHUB_ENV"
+
+      - name: 验证登录状态
+        run: unikraft metro list
 
       - name: 构建镜像
         run: |
@@ -126,6 +130,7 @@ jobs:
 
       - name: 通过 On-Demand Template 部署
         env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
           UUID_VAL: ${{ github.event.inputs.UUID }}
           SUB_PATH_VAL: ${{ github.event.inputs.SUB_PATH }}
           NEZHA_SERVER_VAL: ${{ github.event.inputs.NEZHA_SERVER }}
@@ -149,14 +154,24 @@ jobs:
           echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
           echo "ENABLE_NEZHA_VAL=$ENABLE_NEZHA_VAL" >> "$GITHUB_ENV"
 
-          # 清理同名实例和旧模板
-          unikraft instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
-          unikraft api "https://api.${{ env.METRO }}.unikraft.cloud/v1/instances/templates/${{ env.APP_NAME }}-tpl" \
-            --metro=${{ env.METRO }} -X DELETE 2>/dev/null || true
-
+          API_BASE="https://api.${{ env.METRO }}.unikraft.cloud/v1"
           TEMPLATE_NAME="${{ env.APP_NAME }}-tpl"
 
-          # 用 jq 构造 JSON，环境变量直接放在顶层 env 字段
+          # 清理同名实例和旧模板
+          echo "=== 清理旧实例 ==="
+          curl -sS -X DELETE \
+            -H "Authorization: Bearer $UKC_TOKEN" \
+            "$API_BASE/instances/${{ env.APP_NAME }}" || true
+
+          echo ""
+          echo "=== 清理旧模板 ==="
+          curl -sS -X DELETE \
+            -H "Authorization: Bearer $UKC_TOKEN" \
+            "$API_BASE/instances/templates/${TEMPLATE_NAME}" || true
+
+          echo ""
+          echo "=== 构造 Deploy JSON ==="
+          # 所有环境变量都放在 create_args.env（快照会锁定它们）
           jq -n \
             --arg name "${{ env.APP_NAME }}" \
             --arg tpl "$TEMPLATE_NAME" \
@@ -178,27 +193,22 @@ jobs:
                   image: $image,
                   memory_mb: $memory,
                   vcpus: 1,
-                  env: {
-                    TEMPLATE_MODE: "true",
-                    PORT: $port
-                  }
+                  env: ({
+                    PORT: $port,
+                    UUID: $uuid,
+                    WSPATH: $wspath,
+                    SUB_PATH: $subpath,
+                    NAME: "ukc",
+                    ENABLE_NEZHA: $enable_nezha
+                  } + (if $enable_nezha == "true" and $nz_server != "" and $nz_key != ""
+                       then {
+                         NZ_SERVER: $nz_server,
+                         NZ_CLIENT_SECRET: $nz_key,
+                         NZ_UUID: $uuid
+                       }
+                       else {} end))
                 }
               },
-              env: ({
-                TEMPLATE_MODE: "false",
-                PORT: $port,
-                UUID: $uuid,
-                WSPATH: $wspath,
-                SUB_PATH: $subpath,
-                NAME: "ukc",
-                ENABLE_NEZHA: $enable_nezha
-              } + (if $enable_nezha == "true" and $nz_server != "" and $nz_key != ""
-                   then {
-                     NZ_SERVER: $nz_server,
-                     NZ_CLIENT_SECRET: $nz_key,
-                     NZ_UUID: $uuid
-                   }
-                   else {} end)),
               service_group: {
                 services: [{
                   port: 443,
@@ -209,26 +219,34 @@ jobs:
               autostart: true
             }' > /tmp/deploy.json
 
-          echo "=== Deploy JSON ==="
           cat /tmp/deploy.json
 
+          echo ""
           echo "=== 调用 API 创建实例（On-Demand Template） ==="
-          # 使用完整的 API 端点 URL
-          API_URL="https://api.${{ env.METRO }}.unikraft.cloud/v1/instances"
-          unikraft api "$API_URL" --metro=${{ env.METRO }} -d "$(cat /tmp/deploy.json)"
+          curl -sS -X POST \
+            -H "Authorization: Bearer $UKC_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/deploy.json \
+            "$API_BASE/instances" \
+            -w "\nHTTP_CODE=%{http_code}\n"
 
       - name: 获取实例信息
+        env:
+          UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
         run: |
-          sleep 15
+          sleep 20
           echo "=== 实例列表 ==="
           unikraft instance list
           echo ""
           echo "=== 实例详情 ==="
           unikraft instance get ${{ env.APP_NAME }} || true
 
-          FQDN=$(unikraft instance get ${{ env.APP_NAME }} -o json 2>/dev/null \
-            | grep -oE '"fqdn"[^,]*' | head -1 \
-            | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
+          API_BASE="https://api.${{ env.METRO }}.unikraft.cloud/v1"
+          FQDN=$(curl -sS \
+            -H "Authorization: Bearer $UKC_TOKEN" \
+            "$API_BASE/instances/${{ env.APP_NAME }}" 2>/dev/null \
+            | jq -r '.data.instances[0].service_group.domains[0].fqdn // empty')
+
           if [ -z "$FQDN" ]; then
             FQDN=$(unikraft instance list 2>/dev/null | grep "${{ env.APP_NAME }}" \
               | grep -oE '[a-z0-9-]+\.'${{ env.METRO }}'\.unikraft\.app' | head -1)
@@ -255,7 +273,7 @@ jobs:
             echo ""
             echo "VLESS: vless://${{ env.UUID }}@$FQDN:443?encryption=none&security=tls&sni=$FQDN&fp=chrome&type=ws&host=$FQDN&path=%2F${{ env.WSPATH }}"
           else
-            echo "⚠️ 未获取到 FQDN"
+            echo "⚠️ 未获取到 FQDN，请手动查看实例详情"
           fi
 
       - name: 清理临时文件
