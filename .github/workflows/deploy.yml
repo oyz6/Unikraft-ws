@@ -108,14 +108,18 @@ jobs:
           chmod 600 /tmp/ukc-token
           LOGIN_OUTPUT=$(unikraft login --token /tmp/ukc-token 2>&1)
           echo "$LOGIN_OUTPUT"
-          # 提取组织名，去除 ANSI 颜色码
-          ORG=$(echo "$LOGIN_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP 'organization=\K[^ ]+')
+          # 去除 ANSI 颜色码，只取第一行匹配结果，并清理空白字符
+          ORG=$(echo "$LOGIN_OUTPUT" \
+            | sed 's/\x1b\[[0-9;]*m//g' \
+            | grep -oP 'organization=\K[^ ]+' \
+            | head -n 1 \
+            | tr -d '[:space:]')
           if [ -z "$ORG" ]; then
             echo "无法自动提取组织名，使用默认值 oyz"
             ORG="oyz"
           fi
+          echo "当前组织: [$ORG]"
           echo "ORG=$ORG" >> "$GITHUB_ENV"
-          echo "当前组织: $ORG"
 
       - name: 验证登录状态
         run: unikraft metro list
