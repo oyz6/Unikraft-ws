@@ -118,9 +118,6 @@ jobs:
           echo "当前组织: [$ORG]"
           echo "ORG=$ORG" >> "$GITHUB_ENV"
 
-      - name: 验证登录状态
-        run: unikraft metro list
-
       - name: 构建镜像
         run: |
           IMAGE="unikraft.io/${{ env.ORG }}/${{ env.APP_NAME }}:latest"
@@ -154,12 +151,12 @@ jobs:
 
           # 清理同名实例和旧模板
           unikraft instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
-          unikraft api "/v1/instances/templates/${{ env.APP_NAME }}-tpl" \
+          unikraft api "https://api.${{ env.METRO }}.unikraft.cloud/v1/instances/templates/${{ env.APP_NAME }}-tpl" \
             --metro=${{ env.METRO }} -X DELETE 2>/dev/null || true
 
           TEMPLATE_NAME="${{ env.APP_NAME }}-tpl"
 
-          # 用 jq 构造 JSON，避免手写转义
+          # 用 jq 构造 JSON，环境变量直接放在顶层 env 字段
           jq -n \
             --arg name "${{ env.APP_NAME }}" \
             --arg tpl "$TEMPLATE_NAME" \
@@ -187,23 +184,21 @@ jobs:
                   }
                 }
               },
-              runtime: {
-                env: ({
-                  TEMPLATE_MODE: "false",
-                  PORT: $port,
-                  UUID: $uuid,
-                  WSPATH: $wspath,
-                  SUB_PATH: $subpath,
-                  NAME: "ukc",
-                  ENABLE_NEZHA: $enable_nezha
-                } + (if $enable_nezha == "true" and $nz_server != "" and $nz_key != ""
-                     then {
-                       NZ_SERVER: $nz_server,
-                       NZ_CLIENT_SECRET: $nz_key,
-                       NZ_UUID: $uuid
-                     }
-                     else {} end))
-              },
+              env: ({
+                TEMPLATE_MODE: "false",
+                PORT: $port,
+                UUID: $uuid,
+                WSPATH: $wspath,
+                SUB_PATH: $subpath,
+                NAME: "ukc",
+                ENABLE_NEZHA: $enable_nezha
+              } + (if $enable_nezha == "true" and $nz_server != "" and $nz_key != ""
+                   then {
+                     NZ_SERVER: $nz_server,
+                     NZ_CLIENT_SECRET: $nz_key,
+                     NZ_UUID: $uuid
+                   }
+                   else {} end)),
               service_group: {
                 services: [{
                   port: 443,
@@ -218,7 +213,9 @@ jobs:
           cat /tmp/deploy.json
 
           echo "=== 调用 API 创建实例（On-Demand Template） ==="
-          unikraft api /v1/instances --metro=${{ env.METRO }} "$(cat /tmp/deploy.json)"
+          # 使用完整的 API 端点 URL
+          API_URL="https://api.${{ env.METRO }}.unikraft.cloud/v1/instances"
+          unikraft api "$API_URL" --metro=${{ env.METRO }} -d "$(cat /tmp/deploy.json)"
 
       - name: 获取实例信息
         run: |
