@@ -22,27 +22,35 @@ on:
           - 新加坡 (sin)
           - 美国 华盛顿 (was)
       app_name:
-        description: '应用名称（可选，留空则自动生成）'
+        description: '应用名称（留空自动生成）'
         required: false
         default: ''
       UUID:
-        description: 'UUID(可选，留空将使用默认值，节点和哪吒v1共用)'
+        description: 'UUID（留空用默认值）'
         required: false
         default: ''
       NEZHA_SERVER:
-        description: 'NEZHA_SERVER(v1:nezha.xxx.com:8008)'
+        description: 'NEZHA_SERVER（例如 nezha.xxx.com:443）'
         required: false
         default: ''
       NEZHA_KEY:
-        description: 'NEZHA-KEY(须和 NEZHA_SERVER 一起填写)'
+        description: 'NEZHA_KEY（须和 NEZHA_SERVER 一起填）'
         required: false
         default: ''
+      ENABLE_NEZHA:
+        description: '是否启用哪吒 Agent'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
       SUB_PATH:
-        description: 'SUB_PATH(订阅 token，可选，留空使用 sub)'
+        description: 'SUB_PATH（订阅 token，留空使用 sub）'
         required: false
         default: ''
       MEMORY:
-        description: '内存 MB（默认 512）'
+        description: '内存 MB'
         required: false
         default: '512'
 
@@ -91,9 +99,7 @@ jobs:
           echo "METRO=$METRO" >> "$GITHUB_ENV"
 
           MEMORY="${{ github.event.inputs.MEMORY }}"
-          if [ -z "$MEMORY" ]; then
-            MEMORY="${{ env.DEFAULT_MEMORY }}"
-          fi
+          [ -z "$MEMORY" ] && MEMORY="${{ env.DEFAULT_MEMORY }}"
           echo "MEMORY=$MEMORY" >> "$GITHUB_ENV"
 
           echo "应用名称: $APP_NAME"
@@ -108,16 +114,12 @@ jobs:
           chmod 600 /tmp/ukc-token
           LOGIN_OUTPUT=$(unikraft login --token /tmp/ukc-token 2>&1)
           echo "$LOGIN_OUTPUT"
-          # 去除 ANSI 颜色码，只取第一行匹配结果，并清理空白字符
           ORG=$(echo "$LOGIN_OUTPUT" \
             | sed 's/\x1b\[[0-9;]*m//g' \
             | grep -oP 'organization=\K[^ ]+' \
             | head -n 1 \
             | tr -d '[:space:]')
-          if [ -z "$ORG" ]; then
-            echo "无法自动提取组织名，使用默认值 oyz"
-            ORG="oyz"
-          fi
+          [ -z "$ORG" ] && ORG="oyz"
           echo "当前组织: [$ORG]"
           echo "ORG=$ORG" >> "$GITHUB_ENV"
 
@@ -140,16 +142,14 @@ jobs:
           set -euo pipefail
 
           UUID_INPUT="${UUID_VAL:-${{ secrets.UUID }}}"
-          NEZHA_SERVER_INPUT="${NEZHA_SERVER_VAL:-${{ secrets.NEZHA_SERVER }}}"
-          NEZHA_KEY_INPUT="${NEZHA_KEY_VAL:-${{ secrets.NEZHA_KEY }}}"
+          NZ_SERVER_INPUT="${NEZHA_SERVER_VAL:-${{ secrets.NEZHA_SERVER }}}"
+          NZ_KEY_INPUT="${NEZHA_KEY_VAL:-${{ secrets.NEZHA_KEY }}}"
           SUB_PATH_INPUT="${SUB_PATH_VAL:-${{ secrets.SUB_PATH }}}"
+          ENABLE_NEZHA_VAL="${{ github.event.inputs.ENABLE_NEZHA }}"
 
-          if [ -z "$UUID_INPUT" ]; then
-            UUID_INPUT="c202b33e-03d9-406c-9bba-1ca228036028"
-          fi
-          if [ -z "$SUB_PATH_INPUT" ]; then
-            SUB_PATH_INPUT="sub"
-          fi
+          [ -z "$UUID_INPUT" ] && UUID_INPUT="c202b33e-03d9-406c-9bba-1ca228036028"
+          [ -z "$SUB_PATH_INPUT" ] && SUB_PATH_INPUT="sub"
+          [ -z "$ENABLE_NEZHA_VAL" ] && ENABLE_NEZHA_VAL="false"
 
           WSPATH_VAL="${UUID_INPUT:0:8}"
 
@@ -157,7 +157,6 @@ jobs:
           echo "WSPATH=$WSPATH_VAL" >> "$GITHUB_ENV"
           echo "SUB_PATH=$SUB_PATH_INPUT" >> "$GITHUB_ENV"
 
-          # 先删除同名实例（若存在）
           unikraft instance delete "${{ env.APP_NAME }}" 2>/dev/null || true
 
           ENV_ARGS=""
@@ -166,12 +165,16 @@ jobs:
           ENV_ARGS="$ENV_ARGS --env WSPATH=$WSPATH_VAL"
           ENV_ARGS="$ENV_ARGS --env SUB_PATH=$SUB_PATH_INPUT"
           ENV_ARGS="$ENV_ARGS --env NAME=ukc"
+          ENV_ARGS="$ENV_ARGS --env ENABLE_NEZHA=$ENABLE_NEZHA_VAL"
 
-          if [ -n "$NEZHA_SERVER_INPUT" ]; then
-            ENV_ARGS="$ENV_ARGS --env SERVER=$NEZHA_SERVER_INPUT"
-          fi
-          if [ -n "$NEZHA_KEY_INPUT" ]; then
-            ENV_ARGS="$ENV_ARGS --env CLIENT_SECRET=$NEZHA_KEY_INPUT"
+          if [ "$ENABLE_NEZHA_VAL" = "true" ]; then
+            if [ -n "$NZ_SERVER_INPUT" ]; then
+              ENV_ARGS="$ENV_ARGS --env NZ_SERVER=$NZ_SERVER_INPUT"
+            fi
+            if [ -n "$NZ_KEY_INPUT" ]; then
+              ENV_ARGS="$ENV_ARGS --env NZ_CLIENT_SECRET=$NZ_KEY_INPUT"
+            fi
+            ENV_ARGS="$ENV_ARGS --env NZ_UUID=$UUID_INPUT"
           fi
 
           unikraft run \
@@ -187,13 +190,13 @@ jobs:
         run: |
           echo "=== 实例列表 ==="
           unikraft instance list
-
           echo ""
           echo "=== 实例详情 ==="
           unikraft instance get ${{ env.APP_NAME }} || true
 
           FQDN=$(unikraft instance get ${{ env.APP_NAME }} -o json 2>/dev/null \
-            | grep -oE '"fqdn"[^,]*' | head -1 | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
+            | grep -oE '"fqdn"[^,]*' | head -1 \
+            | sed -E 's/.*"fqdn"[^"]*"([^"]+)".*/\1/')
           if [ -z "$FQDN" ]; then
             FQDN=$(unikraft instance list 2>/dev/null | grep "${{ env.APP_NAME }}" \
               | grep -oE '[a-z0-9-]+\.'${{ env.METRO }}'\.unikraft\.app' | head -1)
@@ -203,22 +206,23 @@ jobs:
 
       - name: 详细部署信息
         run: |
-          echo "🚀 部署完成！详细信息如下："
+          echo "🚀 部署完成！"
           echo "Metro: ${{ env.METRO }}"
-          echo "应用名称(App Name): ${{ env.APP_NAME }}"
+          echo "应用名称: ${{ env.APP_NAME }}"
           echo "组织: ${{ env.ORG }}"
           echo "内存: ${{ env.MEMORY }}M"
           echo "UUID: ${{ env.UUID }}"
           echo "WSPATH: ${{ env.WSPATH }}"
           echo "订阅路径: ${{ env.SUB_PATH }}"
+          echo "启用哪吒: ${{ github.event.inputs.ENABLE_NEZHA }}"
           echo ""
           if [ -n "${FQDN:-}" ]; then
-            echo "App url: https://$FQDN"
-            echo "节点订阅链接: https://$FQDN/${{ env.SUB_PATH }}"
+            echo "主页: https://$FQDN/"
+            echo "订阅: https://$FQDN/${{ env.SUB_PATH }}"
             echo ""
-            echo "VLESS 节点: vless://${{ env.UUID }}@$FQDN:443?encryption=none&security=tls&sni=$FQDN&fp=chrome&type=ws&host=$FQDN&path=%2F${{ env.WSPATH }}"
+            echo "VLESS: vless://${{ env.UUID }}@$FQDN:443?encryption=none&security=tls&sni=$FQDN&fp=chrome&type=ws&host=$FQDN&path=%2F${{ env.WSPATH }}"
           else
-            echo "⚠️ 未获取到 FQDN，请在 unikraft 控制台查看实例详情"
+            echo "⚠️ 未获取到 FQDN"
           fi
 
       - name: 清理临时 Token 文件
