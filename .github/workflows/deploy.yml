@@ -64,6 +64,8 @@ jobs:
 
       - name: 安装 Unikraft CLI
         uses: unikraft/setup-action@v1
+        with:
+          version: latest
 
       - name: 安装 Docker（BuildKit）
         uses: docker/setup-buildx-action@v3
@@ -101,8 +103,10 @@ jobs:
         env:
           UKC_TOKEN: ${{ secrets.UKC_TOKEN }}
         run: |
-          unikraft login
-          unikraft metro list || true
+          unikraft login --token "$UKC_TOKEN"
+
+      - name: 验证登录状态
+        run: unikraft metro list
 
       - name: 构建镜像
         env:
